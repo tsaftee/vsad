@@ -6,7 +6,7 @@ on:
 jobs:
   run-opera-gx:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
 
     steps:
       - name: Checkout repo
@@ -28,13 +28,18 @@ jobs:
 
       - name: Create SeleniumBase script
         run: |
-          mkdir -p downloaded_files
           cat > opera_test.py << 'EOF'
           import time
-          import os
-          import glob
           import subprocess
+          import os
           from seleniumbase import SB
+          
+          def find_opera_deb():
+              for root, dirs, files in os.walk("/"):
+                  for f in files:
+                      if f.startswith("opera") and f.endswith(".deb"):
+                          return os.path.join(root, f)
+              return None
           
           with SB(browser="brave", incognito=True) as sb:
               sb.open("https://www.twitch.tv/brutalles")
@@ -43,25 +48,12 @@ jobs:
               time.sleep(10)
           
               sb.click("span.cta")
+              time.sleep(160)
           
-              time.sleep(120)
+              deb = find_opera_deb()
+              if not deb:
+                  raise Exception("Nu s-a găsit niciun fișier opera*.deb în tot filesystem-ul.")
           
-              search_paths = [
-                  "/home/runner/",
-                  "/home/runner/work/",
-                  "/home/runner/downloaded_files/",
-                  "/tmp/",
-                  os.getcwd(),
-              ]
-          
-              found = []
-              for path in search_paths:
-                  found.extend(glob.glob(os.path.join(path, "**", "opera*.deb"), recursive=True))
-          
-              if not found:
-                  raise Exception("Nu s-a găsit niciun fișier opera*.deb în sistem.")
-          
-              deb = found[0]
               print("Găsit:", deb)
           
               subprocess.run(["sudo", "dpkg", "-i", deb], check=True)
