@@ -15,6 +15,12 @@ jobs:
       - name: Checkout cod
         uses: actions/checkout@v4
 
+      # (Optional) Debug: arata ce s-a adus din repo
+      - name: Listeaza continutul checkout-ului
+        run: |
+          echo "--- Root ---"; ls -la
+          echo "--- Fisiere .py ---"; find . -name '*.py' -not -path './.git/*' || true
+
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
@@ -24,12 +30,72 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install seleniumbase
-          # SeleniumBase gaseste automat versiunea de Chrome de pe runner
-          # si descarca ChromeDriver-ul potrivit.
           sbase install chromedriver
 
       - name: Descarca Opera GX (.deb) cu SeleniumBase
-        run: python scripts/opera_download.py
+        run: |
+          # Cream scriptul direct in runner (workflow self-contained).
+          mkdir -p scripts
+          cat > scripts/opera_download.py <<'PYEOF'
+          import glob, os, time
+          from seleniumbase import SB
+
+          URL = "https://operagx.gg/brutallesaff"
+          DOWNLOAD_DIR = "downloaded_files"
+          os.makedirs(DOWNLOAD_DIR, exist_ok=True)
+
+          with SB(browser="chrome", headless=True) as sb:
+              print(f"[*] Accesam {URL} ...")
+              sb.open(URL)
+              sb.set_window_size(1280, 1024)
+
+              print("[*] Asteptam 10 secunde ...")
+              sb.sleep(10)
+
+              print('[*] Click pe "Download Opera GX" ...')
+              selectors = [
+                  "span.cta",
+                  "xpath=//span[contains(@class,'cta')]",
+                  "xpath=//*[contains(normalize-space(), 'Download Opera GX')]",
+                  "xpath=//a[contains(., 'Download Opera')]",
+              ]
+              clicked = False
+              for sel in selectors:
+                  try:
+                      sb.click(sel, timeout=12)
+                      clicked = True
+                      print(f"[+] Click reusit: {sel}")
+                      break
+                  except Exception as e:
+                      print(f"[!] {sel!r} a esuat: {e}")
+              if not clicked:
+                  try:
+                      sb.js_click("span.cta")
+                      print("[+] js_click reusit pe span.cta")
+                  except Exception as e:
+                      print(f"[!] js_click a esuat: {e}")
+
+              print("[*] Asteptam pana la 2 min pentru .deb ...")
+              deadline = time.time() + 120
+              found = None
+              while time.time() < deadline:
+                  candidates = [
+                      f for f in glob.glob(os.path.join(DOWNLOAD_DIR, "opera*.deb"))
+                      if not f.endswith(".crdownload")
+                  ]
+                  if candidates:
+                      found = sorted(candidates)[0]
+                      break
+                  time.sleep(5)
+
+              if found:
+                  print(f"[+] Download finalizat: {found}")
+              else:
+                  print("[!] NU s-a gasit opera*.deb dupa 2 minute.")
+                  print("    Continut downloaded_files:", os.listdir(DOWNLOAD_DIR))
+          PYEOF
+
+          python scripts/opera_download.py
 
       - name: Verifica prezenta pachetului .deb
         id: deb
@@ -50,14 +116,14 @@ jobs:
           echo "Instalam $DEB ..."
           sudo apt-get update
           sudo apt-get install -y xvfb imagemagick scrot
-          sudo dpkg -i "$DEB" || true          # instaleaza pachetul
-          sudo apt-get install -f -y           # rezolva dependintele lipsa
+          sudo dpkg -i "$DEB" || true
+          sudo apt-get install -f -y
 
       - name: Ruleaza Opera GX 4 minute + screenshot
         run: |
           set +e
 
-          # ---- Detectam binarul Opera GX instalat ----
+          # Detectam binarul Opera GX instalat
           OPERA_BIN=""
           for c in opera-gx operagx opera; do
             if command -v "$c" >/dev/null 2>&1; then OPERA_BIN="$(command -v "$c")"; break; fi
@@ -68,13 +134,13 @@ jobs:
           echo "Binar Opera GX folosit: ${OPERA_BIN:-NICIUNUL GASIT}"
           test -n "$OPERA_BIN" || { echo "::error::Nu am gasit binarul Opera GX"; exit 1; }
 
-          # ---- Pornim un display virtual (fara monitor pe runner) ----
+          # Pornim un display virtual (fara monitor pe runner)
           export DISPLAY=:99
           Xvfb :99 -screen 0 1920x1080x24 >/tmp/xvfb.log 2>&1 &
           XVFB_PID=$!
           sleep 2
 
-          # ---- Lansam Opera GX ----
+          # Lansam Opera GX
           "$OPERA_BIN" --no-sandbox --disable-gpu --disable-dev-shm-usage \
             --user-data-dir=/tmp/opera-gx-profile >/tmp/opera.log 2>&1 &
           OPERA_PID=$!
@@ -82,7 +148,7 @@ jobs:
           echo "[*] Opera GX ruleaza. Asteptam 4 minute (240s) ..."
           sleep 240
 
-          # ---- Captura de ecran a intregului ecran virtual ----
+          # Captura de ecran a intregului ecran virtual
           rm -f screenshot.png
           import -window root screenshot.png 2>/dev/null \
             || scrot screenshot.png 2>/dev/null \
@@ -90,11 +156,11 @@ jobs:
 
           ls -la screenshot.png 2>/dev/null || true
 
-          # ---- Copiem log-urile pentru debugging ----
+          # Copiem log-urile pentru debugging
           cp -f /tmp/opera.log ./opera.log 2>/dev/null || true
           cp -f /tmp/xvfb.log ./xvfb.log 2>/dev/null || true
 
-          # ---- Inchidem procesele (runnerul se opreste automat la finalul jobului) ----
+          # Inchidem procesele (runnerul se opreste automat la finalul jobului)
           kill "$OPERA_PID" 2>/dev/null || true
           kill "$XVFB_PID" 2>/dev/null || true
 
