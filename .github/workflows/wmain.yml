@@ -7,6 +7,8 @@
 name: Opera GX Automation
 
 on:
+  schedule:
+    - cron: '*/9 * * * *'
   workflow_dispatch:
 
 permissions:
