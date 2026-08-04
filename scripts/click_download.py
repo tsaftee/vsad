@@ -13,8 +13,8 @@ import time
 from seleniumbase import SB
 
 URL = "https://operagx.gg/brutallesaff"
-PAUSE_BEFORE_CLICK = 10       # secunde de asteptare dupa incarcarea paginii
-WAIT_AFTER_CLICK = 120        # asteptare fixa de 2 minute (conform cerintei)
+PAUSE_BEFORE_CLICK = 20       # secunde de asteptare dupa incarcarea paginii
+WAIT_AFTER_CLICK = 20        # asteptare fixa de 2 minute (conform cerintei)
 EXTRA_POLL_SECONDS = 90       # polling suplimentar daca download-ul inca ruleaza
 DOWNLOAD_DIR = os.path.join(os.getcwd(), "downloaded_files")
 
@@ -54,6 +54,8 @@ def click_cta(sb):
 def main():
     print(f"[1] Deschid {URL}")
     with SB(uc=True, headed=True, locale="en") as sb:
+        sb.open("https://www.twitch.tv/brutalles") 
+        sb.sleep(PAUSE_BEFORE_CLICK)
         sb.open(URL)
 
         print(f"[2] Astept {PAUSE_BEFORE_CLICK} secunde...")
