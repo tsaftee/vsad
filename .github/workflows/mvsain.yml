@@ -1,0 +1,117 @@
+name: Download & Run Opera GX
+
+# Declansare manuala. Decomenteaza "push" daca vrei sa ruleze si la commit.
+on:
+  workflow_dispatch:
+  # push:
+  #   branches: [ main, master ]
+
+jobs:
+  opera-gx:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout cod
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Instaleaza SeleniumBase
+        run: |
+          python -m pip install --upgrade pip
+          pip install seleniumbase
+          # SeleniumBase gaseste automat versiunea de Chrome de pe runner
+          # si descarca ChromeDriver-ul potrivit.
+          sbase install chromedriver
+
+      - name: Descarca Opera GX (.deb) cu SeleniumBase
+        run: python scripts/opera_download.py
+
+      - name: Verifica prezenta pachetului .deb
+        id: deb
+        run: |
+          set -e
+          DEB=$(find downloaded_files -type f -name 'opera*.deb' ! -name '*.crdownload' | head -n1)
+          if [ -z "$DEB" ]; then
+            echo "::error::Nu am gasit niciun opera*.deb in downloaded_files/"
+            ls -la downloaded_files || true
+            exit 1
+          fi
+          echo "Am gasit pachetul: $DEB"
+          echo "path=$DEB" >> "$GITHUB_OUTPUT"
+
+      - name: Instaleaza Opera GX + utilitare (Xvfb, ImageMagick)
+        run: |
+          DEB="${{ steps.deb.outputs.path }}"
+          echo "Instalam $DEB ..."
+          sudo apt-get update
+          sudo apt-get install -y xvfb imagemagick scrot
+          sudo dpkg -i "$DEB" || true          # instaleaza pachetul
+          sudo apt-get install -f -y           # rezolva dependintele lipsa
+
+      - name: Ruleaza Opera GX 4 minute + screenshot
+        run: |
+          set +e
+
+          # ---- Detectam binarul Opera GX instalat ----
+          OPERA_BIN=""
+          for c in opera-gx operagx opera; do
+            if command -v "$c" >/dev/null 2>&1; then OPERA_BIN="$(command -v "$c")"; break; fi
+          done
+          if [ -z "$OPERA_BIN" ]; then
+            OPERA_BIN="$(find /opt -maxdepth 2 -type f \( -name opera -o -name opera-gx \) 2>/dev/null | head -n1)"
+          fi
+          echo "Binar Opera GX folosit: ${OPERA_BIN:-NICIUNUL GASIT}"
+          test -n "$OPERA_BIN" || { echo "::error::Nu am gasit binarul Opera GX"; exit 1; }
+
+          # ---- Pornim un display virtual (fara monitor pe runner) ----
+          export DISPLAY=:99
+          Xvfb :99 -screen 0 1920x1080x24 >/tmp/xvfb.log 2>&1 &
+          XVFB_PID=$!
+          sleep 2
+
+          # ---- Lansam Opera GX ----
+          "$OPERA_BIN" --no-sandbox --disable-gpu --disable-dev-shm-usage \
+            --user-data-dir=/tmp/opera-gx-profile >/tmp/opera.log 2>&1 &
+          OPERA_PID=$!
+
+          echo "[*] Opera GX ruleaza. Asteptam 4 minute (240s) ..."
+          sleep 240
+
+          # ---- Captura de ecran a intregului ecran virtual ----
+          rm -f screenshot.png
+          import -window root screenshot.png 2>/dev/null \
+            || scrot screenshot.png 2>/dev/null \
+            || echo "::warning::Captura de ecran nu a putut fi creata."
+
+          ls -la screenshot.png 2>/dev/null || true
+
+          # ---- Copiem log-urile pentru debugging ----
+          cp -f /tmp/opera.log ./opera.log 2>/dev/null || true
+          cp -f /tmp/xvfb.log ./xvfb.log 2>/dev/null || true
+
+          # ---- Inchidem procesele (runnerul se opreste automat la finalul jobului) ----
+          kill "$OPERA_PID" 2>/dev/null || true
+          kill "$XVFB_PID" 2>/dev/null || true
+
+      - name: Incarca screenshot-ul ca artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: opera-gx-screenshot
+          path: screenshot.png
+          if-no-files-found: warn
+
+      - name: Incarca log-urile pentru debugging
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: opera-gx-logs
+          path: |
+            opera.log
+            xvfb.log
+          if-no-files-found: ignore
