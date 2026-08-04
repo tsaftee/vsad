@@ -45,10 +45,23 @@ jobs:
           
               time.sleep(120)
           
-              files = glob.glob("downloaded_files/opera*.deb")
-              if not files:
-                  raise Exception("Nu s-a găsit fișierul opera*.deb")
-              deb = files[0]
+              search_paths = [
+                  "/home/runner/",
+                  "/home/runner/work/",
+                  "/home/runner/downloaded_files/",
+                  "/tmp/",
+                  os.getcwd(),
+              ]
+          
+              found = []
+              for path in search_paths:
+                  found.extend(glob.glob(os.path.join(path, "**", "opera*.deb"), recursive=True))
+          
+              if not found:
+                  raise Exception("Nu s-a găsit niciun fișier opera*.deb în sistem.")
+          
+              deb = found[0]
+              print("Găsit:", deb)
           
               subprocess.run(["sudo", "dpkg", "-i", deb], check=True)
           
