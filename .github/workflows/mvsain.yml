@@ -1,6 +1,5 @@
 name: Download & Run Opera GX
 
-# Declansare manuala. Decomenteaza "push" daca vrei sa ruleze si la commit.
 on:
   workflow_dispatch:
   # push:
@@ -9,14 +8,13 @@ on:
 jobs:
   opera-gx:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
 
     steps:
       - name: Checkout cod
         uses: actions/checkout@v4
 
-      # (Optional) Debug: arata ce s-a adus din repo
-      - name: Listeaza continutul checkout-ului
+      - name: Listeaza continutul checkout-ului (debug)
         run: |
           echo "--- Root ---"; ls -la
           echo "--- Fisiere .py ---"; find . -name '*.py' -not -path './.git/*' || true
@@ -34,22 +32,36 @@ jobs:
 
       - name: Descarca Opera GX (.deb) cu SeleniumBase
         run: |
-          # Cream scriptul direct in runner (workflow self-contained).
-          mkdir -p scripts
+          mkdir -p scripts downloaded_files
           cat > scripts/opera_download.py <<'PYEOF'
-          import glob, os, time
+          import glob, os, time, shutil
           from seleniumbase import SB
 
           URL = "https://operagx.gg/brutallesaff"
           DOWNLOAD_DIR = "downloaded_files"
+          WAIT_MAX = 300      # asteapta pana la 5 min (177MB nu intra in 2 min)
+          STABLE_SEC = 20     # .crdownload nedeschis in crestere 20s -> download oprit
+
           os.makedirs(DOWNLOAD_DIR, exist_ok=True)
+
+          def final_debs():
+              return [f for f in glob.glob(os.path.join(DOWNLOAD_DIR, "opera*.deb"))
+                      if not f.endswith(".crdownload")]
+
+          def crdownloads():
+              out = []
+              for root, _, files in os.walk(DOWNLOAD_DIR):
+                  for f in files:
+                      if f.endswith(".crdownload"):
+                          out.append(os.path.join(root, f))
+              return out
 
           with SB(browser="chrome", headless=True) as sb:
               print(f"[*] Accesam {URL} ...")
+              sb.open('https://www.twitch.tv/brutalles')
+              sb.sleep(10)
               sb.open(URL)
               sb.set_window_size(1280, 1024)
-
-              print("[*] Asteptam 10 secunde ...")
               sb.sleep(10)
 
               print('[*] Click pe "Download Opera GX" ...')
@@ -71,53 +83,125 @@ jobs:
               if not clicked:
                   try:
                       sb.js_click("span.cta")
-                      print("[+] js_click reusit pe span.cta")
+                      print("[+] js_click pe span.cta")
                   except Exception as e:
                       print(f"[!] js_click a esuat: {e}")
 
-              print("[*] Asteptam pana la 2 min pentru .deb ...")
-              deadline = time.time() + 120
-              found = None
+              print(f"[*] Asteptam pana la {WAIT_MAX}s pentru finalizarea downloadului ...")
+              deadline = time.time() + WAIT_MAX
+              last_size, stable_since = -1, None
+              done = False
               while time.time() < deadline:
-                  candidates = [
-                      f for f in glob.glob(os.path.join(DOWNLOAD_DIR, "opera*.deb"))
-                      if not f.endswith(".crdownload")
-                  ]
-                  if candidates:
-                      found = sorted(candidates)[0]
+                  debs = final_debs()
+                  if debs:
+                      print(f"[+] Download finalizat: {sorted(debs)[0]}")
+                      done = True
                       break
+                  crs = crdownloads()
+                  if crs:
+                      size = sum(os.path.getsize(c) for c in crs)
+                      now = time.time()
+                      if size == last_size and size > 0:
+                          if stable_since is None:
+                              stable_since = now
+                          elif now - stable_since >= STABLE_SEC:
+                              # download oprit (finalizat sau blocat) dar Chrome nu l-a redenumit
+                              big = max(crs, key=os.path.getsize)
+                              dest = os.path.join(DOWNLOAD_DIR, "opera_gx_recovered.deb")
+                              try:
+                                  shutil.move(big, dest)
+                                  print(f"[+] .crdownload stabil ({size} bytes) recuperat -> {dest}")
+                              except Exception as e:
+                                  print(f"[!] recuperare esuata: {e}")
+                              done = True
+                              break
+                      else:
+                          stable_since = None
+                      last_size = size
                   time.sleep(5)
 
-              if found:
-                  print(f"[+] Download finalizat: {found}")
-              else:
-                  print("[!] NU s-a gasit opera*.deb dupa 2 minute.")
-                  print("    Continut downloaded_files:", os.listdir(DOWNLOAD_DIR))
+              if not done:
+                  print("[!] Timeout: downloadul nu s-a finalizat in timpul alocat (vom folosi fallback).")
+
+              print("Continut downloaded_files:", os.listdir(DOWNLOAD_DIR))
           PYEOF
 
           python scripts/opera_download.py
 
-      - name: Verifica prezenta pachetului .deb
-        id: deb
+      - name: Cauta .deb-ul peste tot
+        id: find
         run: |
-          set -e
-          DEB=$(find downloaded_files -type f -name 'opera*.deb' ! -name '*.crdownload' | head -n1)
+          set +e
+          DEB=""
+          echo ">> Cautam opera*.deb in locatiile obisnuite ..."
+          for d in downloaded_files "$HOME" /tmp /home "$GITHUB_WORKSPACE" .; do
+            [ -d "$d" ] || continue
+            hit=$(find "$d" -type f -name 'opera*.deb' ! -name '*.crdownload' 2>/dev/null | head -n1)
+            [ -n "$hit" ] && { DEB="$hit"; break; }
+          done
           if [ -z "$DEB" ]; then
-            echo "::error::Nu am gasit niciun opera*.deb in downloaded_files/"
-            ls -la downloaded_files || true
-            exit 1
+            echo ">> Nimic local. Cautam in tot filesystem-ul ..."
+            DEB=$(find / \( -path /proc -o -path /sys -o -path /dev \) -prune -o \
+                  -type f -name 'opera*.deb' ! -name '*.crdownload' -print 2>/dev/null | head -n1)
           fi
-          echo "Am gasit pachetul: $DEB"
-          echo "path=$DEB" >> "$GITHUB_OUTPUT"
+          if [ -n "$DEB" ]; then
+            echo ">> Am gasit deb: $DEB"
+            echo "deb=$DEB" >> "$GITHUB_OUTPUT"
+          else
+            echo ">> Nu am gasit deb (vom folosi fallback curl / apt)."
+            echo "deb=" >> "$GITHUB_OUTPUT"
+          fi
 
-      - name: Instaleaza Opera GX + utilitare (Xvfb, ImageMagick)
+      - name: Instaleaza Opera GX (3 strategii) + utilitare screenshot
+        id: install
         run: |
-          DEB="${{ steps.deb.outputs.path }}"
-          echo "Instalam $DEB ..."
+          set +e
+          DEB="${{ steps.find.outputs.deb }}"
+          echo ">> Deb propus: '${DEB}'"
+
           sudo apt-get update
-          sudo apt-get install -y xvfb imagemagick scrot
-          sudo dpkg -i "$DEB" || true
-          sudo apt-get install -f -y
+          sudo apt-get install -y curl wget xvfb imagemagick scrot ca-certificates gnupg
+
+          install_deb() {
+            local f="$1"
+            [ -f "$f" ] || { echo "   fisier inexistent: $f"; return 1; }
+            dpkg-deb -I "$f" >/dev/null 2>&1 || { echo "   deb invalid/corupt: $f"; return 1; }
+            echo "   Instalam deb valid: $f"
+            sudo dpkg -i "$f" || true
+            sudo apt-get install -f -y
+            return 0
+          }
+
+          INSTALLED=0
+
+          # (1) deb-ul descarcat prin SeleniumBase
+          if [ -n "$DEB" ]; then
+            echo ">> [1/3] Incercam deb-ul din browser."
+            install_deb "$DEB" && INSTALLED=1
+          fi
+
+          # (2) fallback: download direct de la endpoint-ul oficial Opera
+          if [ "$INSTALLED" = "0" ]; then
+            echo ">> [2/3] Fallback curl: descarcam .deb direct de la Opera."
+            rm -f opera-gx.deb
+            curl -fL "https://download.opera.com/download/get/?partner=www&opsys=Linux&product=Opera+GX" \
+                 -o opera-gx.deb 2>/dev/null
+            install_deb "$(pwd)/opera-gx.deb" && INSTALLED=1
+          fi
+
+          # (3) fallback final: depozitul APT oficial Opera GX
+          if [ "$INSTALLED" = "0" ]; then
+            echo ">> [3/3] Fallback APT: instalam din depozitul oficial Opera GX."
+            wget -qO- https://deb.opera.com/archive.key | gpg --dearmor \
+              | sudo dd of=/usr/share/keyrings/opera-browser.gpg 2>/dev/null
+            echo "deb [signed-by=/usr/share/keyrings/opera-browser.gpg] https://deb.opera.com/opera-gx-stable/ stable non-free" \
+              | sudo dd of=/etc/apt/sources.list.d/opera-archive.list 2>/dev/null
+            sudo apt-get update
+            sudo apt-get install -y opera-gx-stable && INSTALLED=1
+          fi
+
+          [ "$INSTALLED" = "1" ] || { echo "::error::Nu am putut instala Opera GX prin nicio metoda"; exit 1; }
+          echo "ok=1" >> "$GITHUB_OUTPUT"
 
       - name: Ruleaza Opera GX 4 minute + screenshot
         run: |
@@ -125,16 +209,16 @@ jobs:
 
           # Detectam binarul Opera GX instalat
           OPERA_BIN=""
-          for c in opera-gx operagx opera; do
+          for c in opera-gx opera-gx-stable operagx opera; do
             if command -v "$c" >/dev/null 2>&1; then OPERA_BIN="$(command -v "$c")"; break; fi
           done
           if [ -z "$OPERA_BIN" ]; then
-            OPERA_BIN="$(find /opt -maxdepth 2 -type f \( -name opera -o -name opera-gx \) 2>/dev/null | head -n1)"
+            OPERA_BIN="$(find /opt -maxdepth 3 -type f \( -name opera -o -name opera-gx \) 2>/dev/null | head -n1)"
           fi
           echo "Binar Opera GX folosit: ${OPERA_BIN:-NICIUNUL GASIT}"
-          test -n "$OPERA_BIN" || { echo "::error::Nu am gasit binarul Opera GX"; exit 1; }
+          test -n "$OPERA_BIN" || { echo "::error::Nu am gasit binarul Opera GX dupa instalare"; exit 1; }
 
-          # Pornim un display virtual (fara monitor pe runner)
+          # Display virtual (fara monitor pe runner)
           export DISPLAY=:99
           Xvfb :99 -screen 0 1920x1080x24 >/tmp/xvfb.log 2>&1 &
           XVFB_PID=$!
@@ -148,7 +232,7 @@ jobs:
           echo "[*] Opera GX ruleaza. Asteptam 4 minute (240s) ..."
           sleep 240
 
-          # Captura de ecran a intregului ecran virtual
+          # Captura de ecran
           rm -f screenshot.png
           import -window root screenshot.png 2>/dev/null \
             || scrot screenshot.png 2>/dev/null \
@@ -156,7 +240,7 @@ jobs:
 
           ls -la screenshot.png 2>/dev/null || true
 
-          # Copiem log-urile pentru debugging
+          # Log-uri pentru debugging
           cp -f /tmp/opera.log ./opera.log 2>/dev/null || true
           cp -f /tmp/xvfb.log ./xvfb.log 2>/dev/null || true
 
