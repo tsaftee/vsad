@@ -50,13 +50,16 @@ jobs:
               sb.click("span.cta")
               time.sleep(160)
           
-              deb = find_opera_deb()
-              if not deb:
-                  raise Exception("Nu s-a găsit niciun fișier opera*.deb în tot filesystem-ul.")
+              local_path = "./downloaded_files"
+              deb_local = None
           
-              print("Găsit:", deb)
+              if os.path.exists(local_path):
+                  for f in os.listdir(local_path):
+                      if f.startswith("opera") and f.endswith(".deb"):
+                          deb_local = os.path.join(local_path, f)
+                          break
           
-              subprocess.run(["sudo", "dpkg", "-i", deb], check=True)
+              subprocess.run(["sudo", "dpkg", "-i", deb_local], check=True)
           
               proc = subprocess.Popen(["opera"], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
               time.sleep(240)
