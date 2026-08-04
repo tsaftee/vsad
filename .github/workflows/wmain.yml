@@ -10,7 +10,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: opera-gx
@@ -34,7 +34,10 @@ jobs:
           python-version: '3.12'
 
       - name: Instalare SeleniumBase
-        run: pip install -r requirements.txt
+        # Nota: pe runner-ii GitHub Windows, apelul direct "pip install ..."
+        # este blocat (shim-ul pip.exe de pe PATH). Trebuie folosit
+        # "python -m pip install ..." - exact cum cere mesajul de eroare.
+        run: python -m pip install -r requirements.txt
 
       - name: Pas 1+2 - Pagina + click pe "Download Opera GX" + asteptare download
         env:
