@@ -14,7 +14,7 @@ from seleniumbase import SB
 
 URL = "https://operagx.gg/brutallesaff"
 PAUSE_BEFORE_CLICK = 20       # secunde de asteptare dupa incarcarea paginii
-WAIT_AFTER_CLICK = 20        # asteptare fixa de 2 minute (conform cerintei)
+WAIT_AFTER_CLICK = 40        # asteptare fixa de 2 minute (conform cerintei)
 EXTRA_POLL_SECONDS = 90       # polling suplimentar daca download-ul inca ruleaza
 DOWNLOAD_DIR = os.path.join(os.getcwd(), "downloaded_files")
 
