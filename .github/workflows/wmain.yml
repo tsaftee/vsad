@@ -10,7 +10,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: opera-gx
@@ -39,7 +39,19 @@ jobs:
       - name: Pas 1+2 - Pagina + click pe "Download Opera GX" + asteptare download
         env:
           PYTHONIOENCODING: utf-8
-        run: python scripts/click_download.py
+        shell: pwsh
+        run: |
+          # Gaseste orice "scripts/click_*.py" din repo (rezistent la variatii
+          # de nume cauzate de copiere/paste) si il ruleaza cu python.
+          $script = Get-ChildItem -Path (Join-Path $env:GITHUB_WORKSPACE 'scripts') `
+                                   -Filter 'click_*.py' -ErrorAction SilentlyContinue |
+                    Sort-Object Name | Select-Object -First 1
+          if (-not $script) {
+            Write-Error 'Nu am gasit niciun script "scripts/click_*.py" in repo.'
+            exit 1
+          }
+          Write-Host "Rulez: python $($script.FullName)"
+          python $script.FullName
 
       # ----------------------------------------------------------------------
       # Pas 3 – Cauta pe runner un fisier care incepe cu "opera" si se termina
