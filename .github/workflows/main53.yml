@@ -1,0 +1,239 @@
+# ============================================================================
+# Workflow: Opera GX – download, instalare silent, rulare 5 min, screenshot
+# ----------------------------------------------------------------------------
+# Declansare manuala: tab-ul "Actions" -> "Run workflow" (pe main/branch).
+# La finalul job-ului, GitHub distruge automat VM-ul runnerului.
+# ============================================================================
+name: Opera GX Automation
+
+on:
+  schedule:
+    - cron: '*/21 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: opera-gx212
+  cancel-in-progress: false
+
+jobs:
+  opera-gx:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      # ----------------------------------------------------------------------
+      # Pas 1+2 – SeleniumBase: deschide pagina, asteapta 10s, da click pe
+      # <span class="cta">Download Opera GX</span>, asteapta download-ul
+      # ----------------------------------------------------------------------
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Instalare SeleniumBase
+        # Nota: pe runner-ii GitHub Windows, apelul direct "pip install ..."
+        # este blocat (shim-ul pip.exe de pe PATH). Trebuie folosit
+        # "python -m pip install ..." - exact cum cere mesajul de eroare.
+        run: python -m pip install -r requirements.txt
+
+      - name: Pas 1+2 - Pagina + click pe "Download Opera GX" + asteptare download
+        env:
+          PYTHONIOENCODING: utf-8
+        shell: pwsh
+        run: |
+          # Gaseste orice "scripts/click_*.py" din repo (rezistent la variatii
+          # de nume cauzate de copiere/paste) si il ruleaza cu python.
+          $script = Get-ChildItem -Path (Join-Path $env:GITHUB_WORKSPACE 'scripts') `
+                                   -Filter 'click_*.py' -ErrorAction SilentlyContinue |
+                    Sort-Object Name | Select-Object -First 1
+          if (-not $script) {
+            Write-Error 'Nu am gasit niciun script "scripts/click_*.py" in repo.'
+            exit 1
+          }
+          Write-Host "Rulez: python $($script.FullName)"
+          python $script.FullName
+
+      # ----------------------------------------------------------------------
+      # Pas 3 – Cauta pe runner un fisier care incepe cu "opera" si se termina
+      # cu ".exe"
+      # ----------------------------------------------------------------------
+      - name: Pas 3 - Cauta fisierul opera*.exe
+        shell: pwsh
+        run: |
+          $paths = @(
+            (Join-Path $env:GITHUB_WORKSPACE 'downloaded_files'),
+            (Join-Path $env:USERPROFILE 'Downloads'),
+            $env:TEMP
+          )
+          $installer = $null
+          foreach ($p in $paths) {
+            if (-not (Test-Path -LiteralPath $p)) { continue }
+            $candidate = Get-ChildItem -LiteralPath $p -Filter 'opera*.exe' -Recurse -ErrorAction SilentlyContinue |
+                         Where-Object { $_.Name -notlike '*.crdownload' } |
+                         Sort-Object LastWriteTime -Descending |
+                         Select-Object -First 1
+            if ($candidate) { $installer = $candidate.FullName; break }
+          }
+          if (-not $installer) {
+            Write-Error "Nu am gasit niciun fisier 'opera*.exe' pe runner."
+            exit 1
+          }
+          $sizeMb = [math]::Round((Get-Item -LiteralPath $installer).Length / 1MB, 1)
+          Write-Host "Installer gasit: $installer ($sizeMb MB)"
+          Add-Content -Path $env:GITHUB_ENV -Value "INSTALLER_PATH=$installer"
+
+      # ----------------------------------------------------------------------
+      # Pas 4 – Instalare silent, fara prompt-uri (flag-ul /silent al
+      # installer-ului NSIS al Operei)
+      # ----------------------------------------------------------------------
+      - name: Pas 4 - Instalare silent (OperaGXSetup /silent /install /allusers /launchopera)
+        shell: pwsh
+        timeout-minutes: 5
+        run: |
+          Write-Host "Instalez silent: $env:INSTALLER_PATH /silent /install /allusers /launchopera"
+          $p = Start-Process -FilePath $env:INSTALLER_PATH `
+                 -ArgumentList '/silent', '/install', '/allusers', '/launchopera' `
+                 -PassThru
+          $start = Get-Date
+          $deadline = $start.AddSeconds(60)
+          $done = $false
+          while ((Get-Date) -lt $deadline -and -not $done) {
+            Start-Sleep -Seconds 5
+            $p.Refresh()
+            $elapsed = [math]::Round(((Get-Date) - $start).TotalSeconds)
+            if ($p.HasExited) {
+              Write-Host "Installerul s-a terminat dupa ${elapsed}s (exit code: $($p.ExitCode))."
+              $done = $true
+              break
+            }
+            if (Get-Process -Name 'opera' -ErrorAction SilentlyContinue) {
+              Write-Host "Opera a pornit dupa ${elapsed}s (instalare reusita)."
+              $done = $true
+              break
+            }
+            if (Test-Path -LiteralPath "$env:LOCALAPPDATA\Programs\Opera GX\opera.exe") {
+              Write-Host "opera.exe gasit dupa ${elapsed}s (instalare reusita)."
+              $done = $true
+              break
+            }
+            Write-Host "  ... nimic inca (${elapsed}s / 60s)"
+          }
+          if (-not $done) {
+            Write-Host "!! Nu s-a intamplat nimic in 60 de secunde. Fac screenshot si ies."
+            Add-Type -AssemblyName System.Windows.Forms,System.Drawing
+            $bounds = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+            $bmp = New-Object System.Drawing.Bitmap($bounds.Width, $bounds.Height)
+            $gfx = [System.Drawing.Graphics]::FromImage($bmp)
+            $gfx.CopyFromScreen($bounds.Location, [System.Drawing.Point]::Empty, $bounds.Size)
+            $out = Join-Path $env:GITHUB_WORKSPACE 'opera_gx_install_failure.png'
+            $bmp.Save($out, [System.Drawing.Imaging.ImageFormat]::Png)
+            $gfx.Dispose(); $bmp.Dispose()
+            Write-Host "Screenshot de esec salvat: $out"
+            Get-Process | Where-Object { $_.Name -match 'opera|setup' } |
+              Stop-Process -Force -ErrorAction SilentlyContinue
+            Write-Host "Eroare: instalarea nu a progresat in 60s."
+            exit 1
+          }
+          Write-Host "Instalare OK. Se mai asteapta 10s..."; Start-Sleep -Seconds 10
+
+      # ----------------------------------------------------------------------
+      # Pas 5 – Localizeaza opera.exe instalat
+      # ----------------------------------------------------------------------
+      - name: Pas 5 - Localizeaza opera.exe instalat
+        shell: pwsh
+        run: |
+          $candidates = @(
+            (Join-Path $env:LOCALAPPDATA 'Programs\Opera GX\opera.exe'),
+            'C:\Program Files\Opera GX\opera.exe',
+            'C:\Program Files (x86)\Opera GX\opera.exe'
+          )
+          $opera = $candidates | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+          if (-not $opera) {
+            $opera = Get-ChildItem -Path $env:LOCALAPPDATA, 'C:\Program Files', 'C:\Program Files (x86)' `
+                     -Filter 'opera.exe' -Recurse -ErrorAction SilentlyContinue |
+                     Where-Object { $_.FullName -like '*Opera GX*' } |
+                     Select-Object -First 1 -ExpandProperty FullName
+          }
+          if (-not $opera) {
+            Write-Error 'Instalarea nu a produs un opera.exe gasit pe runner.'
+            exit 1
+          }
+          Write-Host "Opera GX instalat la: $opera"
+          Add-Content -Path $env:GITHUB_ENV -Value "OPERA_EXE=$opera"
+
+      # ----------------------------------------------------------------------
+      # Pas 6 – Ruleaza Opera GX timp de 5 minute
+      # ----------------------------------------------------------------------
+      - name: Pas 6 - Ruleaza Opera GX 5 minute
+        shell: pwsh
+        run: |
+          if (Get-Process -Name 'opera' -ErrorAction SilentlyContinue) {
+            Write-Host 'Opera GX ruleaza deja (lansat de installer cu /launchopera).'
+          } else {
+            Start-Process -FilePath $env:OPERA_EXE
+            Write-Host 'Opera GX a pornit.'
+          }
+          Write-Host 'Se asteapta 5 minute (300s)...'
+          Start-Sleep -Seconds 300
+          Write-Host 'Au trecut 5 minute.'
+
+      # ----------------------------------------------------------------------
+      # Pas 7 – Screenshot desktop (Opera GX in prim-plan)
+      # ----------------------------------------------------------------------
+      - name: Pas 7 - Screenshot
+        shell: pwsh
+        run: |
+          try {
+            $ws = New-Object -ComObject WScript.Shell
+            $null = $ws.AppActivate('Opera')
+            Start-Sleep -Seconds 3
+          } catch {
+            Write-Host 'AppActivate nereusit, continuam oricum.'
+          }
+
+          Add-Type -AssemblyName System.Windows.Forms,System.Drawing
+          $bounds = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+          $bmp = New-Object System.Drawing.Bitmap($bounds.Width, $bounds.Height)
+          $gfx = [System.Drawing.Graphics]::FromImage($bmp)
+          $gfx.CopyFromScreen($bounds.Location, [System.Drawing.Point]::Empty, $bounds.Size)
+          $out = Join-Path $env:GITHUB_WORKSPACE 'opera_gx_screenshot.png'
+          $bmp.Save($out, [System.Drawing.Imaging.ImageFormat]::Png)
+          $gfx.Dispose(); $bmp.Dispose()
+          Write-Host "Screenshot salvat: $out ($($bounds.Width)x$($bounds.Height))"
+
+      # ----------------------------------------------------------------------
+      # Pas 8 – Inchide Opera GX
+      # ----------------------------------------------------------------------
+      - name: Pas 8 - Inchide Opera GX
+        shell: pwsh
+        run: |
+          Get-Process | Where-Object { $_.Name -like 'opera*' } |
+            Stop-Process -Force -ErrorAction SilentlyContinue
+          Write-Host 'Opera GX oprit.'
+
+      # ----------------------------------------------------------------------
+      # Pas 9 – Salveaza screenshot-ul ca artifact si lasa job-ul sa se termine
+      # (finalul job-ului = inchiderea/distrugerea runnerului de catre GitHub)
+      # ----------------------------------------------------------------------
+      - name: Pas 9 - Upload artifact (screenshot)
+        # Ruleaza si daca vreun pas anterior a esuat (e.g. pasul 4 a facut
+        # screenshot-ul de esec "opera_gx_install_failure.png" si a iesit).
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: opera-gx-screenshot
+          path: opera_gx_*.png
+          if-no-files-found: warn
+          retention-days: 7
+
+      # Optional – oprire fortata a VM-ului. NU e necesar: GitHub distruge
+      # runnerul automat la finalul job-ului. Daca activezi asta, job-ul va fi
+      # marcat "failed" si artifactul s-ar putea sa nu se mai uploadeze.
+      # - name: (optional) Opreste VM-ul runnerului
+      #   shell: pwsh
+      #   run: shutdown /s /t 5 /f
